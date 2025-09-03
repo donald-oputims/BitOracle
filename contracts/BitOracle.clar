@@ -235,3 +235,96 @@
       (asserts! (is-eq (get direction position-data) winning-direction)
         ERR_INVALID_PREDICTION
       )
+
+      (let (
+          (gross-payout (/ (* (get stake-amount position-data) total-market-stake)
+            winning-pool-stake
+          ))
+          (platform-fee (/ (* gross-payout (var-get platform-fee-basis-points)) u10000))
+          (net-payout (- gross-payout platform-fee))
+        )
+        ;; Execute Transfers
+        (try! (as-contract (stx-transfer? net-payout (as-contract tx-sender) tx-sender)))
+        (try! (as-contract (stx-transfer? platform-fee (as-contract tx-sender) CONTRACT_OWNER)))
+
+        ;; Update Claim Status
+        (map-set participant-positions {
+          market-id: market-id,
+          participant: tx-sender,
+        }
+          (merge position-data { rewards-claimed: true })
+        )
+
+        (ok net-payout)
+      )
+    )
+  )
+)
+
+;; READ-ONLY QUERIES
+
+(define-read-only (get-market-details (market-id uint))
+  (map-get? prediction-markets market-id)
+)
+
+(define-read-only (get-participant-position
+    (market-id uint)
+    (participant principal)
+  )
+  (map-get? participant-positions {
+    market-id: market-id,
+    participant: participant,
+  })
+)
+
+(define-read-only (get-contract-balance)
+  (stx-get-balance (as-contract tx-sender))
+)
+
+(define-read-only (get-platform-config)
+  {
+    oracle: (var-get oracle-principal),
+    min-stake: (var-get min-stake-amount),
+    fee-bps: (var-get platform-fee-basis-points),
+    next-market: (var-get next-market-id),
+  }
+)
+
+;; ADMINISTRATIVE FUNCTIONS
+
+(define-public (update-oracle-principal (new-oracle principal))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set oracle-principal new-oracle)
+    (ok true)
+  )
+)
+
+(define-public (update-minimum-stake (new-minimum uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> new-minimum u0) ERR_INVALID_PARAMS)
+    (var-set min-stake-amount new-minimum)
+    (ok true)
+  )
+)
+
+(define-public (update-platform-fee (new-fee-bps uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (<= new-fee-bps u1000) ERR_INVALID_PARAMS) ;; Max 10%
+    (var-set platform-fee-basis-points new-fee-bps)
+    (ok true)
+  )
+)
+
+(define-public (withdraw-platform-fees (amount uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (<= amount (stx-get-balance (as-contract tx-sender)))
+      ERR_INSUFFICIENT_FUNDS
+    )
+    (try! (as-contract (stx-transfer? amount (as-contract tx-sender) CONTRACT_OWNER)))
+    (ok amount)
+  )
+)
