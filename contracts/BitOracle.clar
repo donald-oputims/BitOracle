@@ -157,3 +157,81 @@
       rewards-claimed: false,
       position-timestamp: current-height,
     })
+
+    ;; Update Market Stakes
+    (map-set prediction-markets market-id
+      (merge market-data {
+        total-up-stakes: (if (is-eq direction PREDICTION_UP)
+          (+ (get total-up-stakes market-data) stake-amount)
+          (get total-up-stakes market-data)
+        ),
+        total-down-stakes: (if (is-eq direction PREDICTION_DOWN)
+          (+ (get total-down-stakes market-data) stake-amount)
+          (get total-down-stakes market-data)
+        ),
+      })
+    )
+
+    (ok true)
+  )
+)
+
+;; Oracle Market Resolution
+(define-public (resolve-market
+    (market-id uint)
+    (btc-final-price uint)
+  )
+  (let ((market-data (unwrap! (map-get? prediction-markets market-id) ERR_MARKET_NOT_FOUND)))
+    ;; Oracle Authorization
+    (asserts! (is-eq tx-sender (var-get oracle-principal)) ERR_UNAUTHORIZED)
+
+    ;; Market Resolution Validation
+    (asserts! (>= stacks-block-height (get market-close-height market-data))
+      ERR_MARKET_INACTIVE
+    )
+    (asserts! (not (get is-resolved market-data)) ERR_MARKET_INACTIVE)
+    (asserts! (> btc-final-price u0) ERR_INVALID_PARAMS)
+
+    ;; Finalize Market
+    (map-set prediction-markets market-id
+      (merge market-data {
+        btc-end-price: btc-final-price,
+        is-resolved: true,
+      })
+    )
+
+    (ok true)
+  )
+)
+
+;; Claim Prediction Rewards
+(define-public (claim-rewards (market-id uint))
+  (let (
+      (market-data (unwrap! (map-get? prediction-markets market-id) ERR_MARKET_NOT_FOUND))
+      (position-data (unwrap!
+        (map-get? participant-positions {
+          market-id: market-id,
+          participant: tx-sender,
+        })
+        ERR_MARKET_NOT_FOUND
+      ))
+    )
+    ;; Resolution Check
+    (asserts! (get is-resolved market-data) ERR_MARKET_UNRESOLVED)
+    (asserts! (not (get rewards-claimed position-data)) ERR_ALREADY_CLAIMED)
+
+    (let (
+        (winning-direction (if (> (get btc-end-price market-data) (get btc-start-price market-data))
+          PREDICTION_UP
+          PREDICTION_DOWN
+        ))
+        (total-market-stake (+ (get total-up-stakes market-data) (get total-down-stakes market-data)))
+        (winning-pool-stake (if (is-eq winning-direction PREDICTION_UP)
+          (get total-up-stakes market-data)
+          (get total-down-stakes market-data)
+        ))
+      )
+      ;; Winning Validation
+      (asserts! (is-eq (get direction position-data) winning-direction)
+        ERR_INVALID_PREDICTION
+      )
